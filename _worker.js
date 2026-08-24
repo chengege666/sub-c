@@ -522,7 +522,7 @@ button {
 	<div class="content">
 		<div class="info">
 			订阅地址(填入客户端):
-			<div class="link-box" id="subUrl"></div>
+			<div class="link-box" id="subUrl" onclick="copySub()" title="点击复制" style="cursor:pointer"></div>
 		</div>
 		<div class="section relative" id="editSection">
 			<div class="section-title">
