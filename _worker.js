@@ -5,7 +5,7 @@
 let mytoken = 'auto';                              // 订阅入口路径,建议改复杂
 let MainData = '';                                 // 默认节点(绑定 KV 后失效)
 let subConverter = 'sub-c.1231818.xyz';            // 订阅转换后端
-let subConfig = 'https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini';
+let subConfig = 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Full.ini';
 let subProtocol = 'https';
 let FileName = 'sub';                              // 订阅文件名
 let SUBUpdateTime = 6;                             // 订阅更新间隔(小时)
