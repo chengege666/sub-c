@@ -1,0 +1,18 @@
+# Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Node
+node_modules/
+package-lock.json
+yarn.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 日志
+*.log

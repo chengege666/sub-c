@@ -1,0 +1,30 @@
+name = "sub-c"
+main = "_worker.js"
+compatibility_date = "2024-09-01"
+
+# ============ KV 命名空间绑定 ============
+# 部署前请先创建 KV 命名空间:
+#   npx wrangler kv:namespace create LINK
+# 创建后将下方 id 替换为返回的 id
+# 也可以在 Cloudflare Pages 控制台 → 设置 → 函数 → KV 命名空间绑定 中手动绑定
+# 变量名必须为 KV
+[[kv_namespaces]]
+binding = "KV"
+id = "在此填写你的 KV 命名空间 id"
+preview_id = "在此填写你的预览 KV 命名空间 id（可选）"
+
+# ============ 环境变量 ============
+# 推荐在 Cloudflare Pages 控制台 → 设置 → 环境变量 中配置
+# 敏感变量(如 ADMIN_PASSWORD)请使用「加密变量/Secret」类型
+[vars]
+TOKEN = "auto"
+SUBAPI = "sub-c.1231818.xyz"
+SUBCONFIG = "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini"
+SUBNAME = "sub"
+SUBUPTIME = "6"
+# ADMIN_PASSWORD = "your_password"  # 编辑页密码，建议在控制台配置为 Secret
+
+# ============ 部署命令 ============
+# 本地开发:  npx wrangler dev
+# 部署:      npx wrangler deploy
+# Pages 部署:连接 GitHub 仓库即可，无需手动 deploy
