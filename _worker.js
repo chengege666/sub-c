@@ -516,7 +516,7 @@ button {
 <body>
 <div class="container">
 	<div class="header">
-		<h1>汇聚订阅管理</h1>
+		<h1>订阅管理</h1>
 		<div class="sub">添加节点链接(vless/vmess/trojan/hysteria2 等)或订阅链接,每行一个</div>
 	</div>
 	<div class="content">
