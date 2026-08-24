@@ -1,0 +1,34 @@
+name: 同步上游仓库
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # 每 6 小时自动同步
+  workflow_dispatch:          # 支持手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 通过 GitHub API 获取本仓库的上级仓库(Fork 来源),非 Fork 仓库则跳过
+      - name: 获取上游仓库
+        id: upstream
+        run: |
+          PARENT=$(curl -s "https://api.github.com/repos/${{ github.repository }}" | jq -r '.parent.full_name // empty')
+          echo "upstream=$PARENT" >> "$GITHUB_OUTPUT"
+
+      - name: 从上游同步
+        if: steps.upstream.outputs.upstream != ''
+        run: |
+          git remote add upstream "https://github.com/${{ steps.upstream.outputs.upstream }}.git"
+          git fetch upstream
+          # 冲突时以原仓库版本为准
+          git merge upstream/HEAD --allow-unrelated-histories -X theirs || true
+          git push origin HEAD
