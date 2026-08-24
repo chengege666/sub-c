@@ -411,12 +411,8 @@ document.getElementById('links').value = ${JSON.stringify(currentData)};
 updateCount();
 
 if (HAS_PASSWORD) {
-	const unlocked = localStorage.getItem('sub_unlocked_' + TOKEN);
-	if (unlocked === '1') {
-		document.getElementById('lockOverlay').classList.add('hidden');
-	} else {
-		document.getElementById('lockOverlay').classList.remove('hidden');
-	}
+	// 每次访问都要求输入密码,不缓存解锁状态
+	document.getElementById('lockOverlay').classList.remove('hidden');
 }
 
 function updateCount() {
@@ -435,7 +431,6 @@ function unlock() {
 		body: JSON.stringify({password: pwd})
 	}).then(r => r.json()).then(data => {
 		if (data.ok) {
-			localStorage.setItem('sub_unlocked_' + TOKEN, '1');
 			localStorage.setItem('sub_pwd_' + TOKEN, document.getElementById('pwdInput').value);
 			document.getElementById('lockOverlay').classList.add('hidden');
 		} else {
