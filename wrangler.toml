@@ -19,7 +19,7 @@ preview_id = "在此填写你的预览 KV 命名空间 id（可选）"
 [vars]
 TOKEN = "auto"
 SUBAPI = "sub-c.1231818.xyz"
-SUBCONFIG = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Full.ini"
+SUBCONFIG = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_MultiCountry.ini"
 SUBNAME = "sub"
 SUBUPTIME = "6"
 # ADMIN_PASSWORD = "your_password"  # 编辑页密码，建议在控制台配置为 Secret
