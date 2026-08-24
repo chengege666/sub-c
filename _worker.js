@@ -68,8 +68,8 @@ export default {
 		}
 
 		// 真实 TOKEN 入口
-		// 绑定 KV 时,浏览器访问返回编辑页
-		if (env.KV && userAgent.includes('mozilla') && !url.search) {
+		// 绑定 KV 时,浏览器访问返回编辑页(含 POST 请求的密码校验/保存)
+		if (env.KV && userAgent.includes('mozilla')) {
 			return editPage(request, env, url, mytoken);
 		}
 
