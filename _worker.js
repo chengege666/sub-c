@@ -92,20 +92,61 @@ export default {
 		}
 
 		// 识别订阅格式(按 UA 或 query 参数)
-		let 订阅格式 = 'base64';
+		// 默认返回 Clash YAML(90%+ 客户端支持),仅明确命中通用客户端时才 base64
+		let 订阅格式 = 'clash';
 		if (!userAgent.includes('mozilla') && !userAgent.includes('null')) {
-			if (userAgent.includes('sing-box') || userAgent.includes('singbox') || url.searchParams.has('sb') || url.searchParams.has('singbox')) {
+			const ual = userAgent.toLowerCase();
+			// ---- 明确要求 base64 的通用客户端(放前面,避免被 clash UA 误匹配)----
+			if (
+				ual.includes('v2rayn') ||
+				ual.includes('v2rayng') ||
+				ual.includes('v2rayn') ||
+				ual.includes('nekobox') ||
+				ual.includes('nekoray') ||
+				ual.includes('shadowrocket') ||
+				ual.includes('shadowsocks') ||
+				ual.includes('ssray') ||
+				ual.includes('ssr') ||
+				ual.includes('v2box') ||
+				ual.includes('sagernet') ||
+				url.searchParams.has('b64') ||
+				url.searchParams.has('base64')
+			) {
+				订阅格式 = 'base64';
+			// ---- SingBox ----
+			} else if (ual.includes('sing-box') || ual.includes('singbox') || url.searchParams.has('sb') || url.searchParams.has('singbox')) {
 				订阅格式 = 'singbox';
-			} else if (userAgent.includes('surge') || url.searchParams.has('surge')) {
+			// ---- Surge / Surfboard ----
+			} else if (ual.includes('surge') || ual.includes('surfboard') || url.searchParams.has('surge')) {
 				订阅格式 = 'surge';
-			} else if (userAgent.includes('quantumult') || url.searchParams.has('quanx')) {
+			// ---- Quantumult X ----
+			} else if (ual.includes('quantumult') || url.searchParams.has('quanx')) {
 				订阅格式 = 'quanx';
-			} else if (userAgent.includes('loon') || url.searchParams.has('loon')) {
+			// ---- Loon ----
+			} else if (ual.includes('loon') || url.searchParams.has('loon')) {
 				订阅格式 = 'loon';
-			} else if (userAgent.includes('clash') || userAgent.includes('meta') || userAgent.includes('mihomo') || url.searchParams.has('clash')) {
+			// ---- Clash / Mihomo 系 ----
+			} else if (
+				ual.includes('clash') ||
+				ual.includes('meta') ||
+				ual.includes('mihomo') ||
+				ual.includes('clashforwindows') ||
+				ual.includes('clash for windows') ||
+				ual.includes('clashverge') ||
+				ual.includes('clash-verge') ||
+				ual.includes('mihomo-party') ||
+				ual.includes('stash') ||
+				ual.includes('karing') ||
+				ual.includes('hiddify') ||
+				ual.includes('dlercloud') ||
+				ual.includes('cfa') ||
+				url.searchParams.has('clash')
+			) {
 				订阅格式 = 'clash';
 			}
+			// 其他未识别 UA → 保持默认 clash
 		}
+		// query 参数强制覆盖
 		if (url.searchParams.has('b64') || url.searchParams.has('base64')) 订阅格式 = 'base64';
 
 		// 拉取订阅链接
@@ -137,11 +178,7 @@ export default {
 
 		try {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
-			if (!resp.ok) {
-				return new Response(base64Encode(dedup(req_data)), {
-					headers: { 'content-type': 'text/plain; charset=utf-8' }
-				});
-			}
+			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
 			const content = await resp.text();
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
 			return new Response(content, {
@@ -152,9 +189,10 @@ export default {
 				}
 			});
 		} catch (e) {
-			return new Response(base64Encode(dedup(req_data)), {
-				headers: { 'content-type': 'text/plain; charset=utf-8' }
-			});
+			// 结构化格式客户端:转换失败时返回对应格式的最小可用配置(含错误注释),防止 parse 错
+			const nodes = dedup(req_data);
+			const fallback = buildFallbackConfig(订阅格式, nodes, String(e.message || e));
+			return new Response(fallback.body, { headers: fallback.headers });
 		}
 	}
 };
@@ -191,6 +229,49 @@ async function MD5(text) {
 	const data = await crypto.subtle.digest('MD5', encoder.encode(text));
 	const arr = Array.from(new Uint8Array(data));
 	return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 订阅转换后端失败时:构造结构化格式的最小可用配置(防止客户端 parse 崩)
+function buildFallbackConfig(format, nodesRaw, errMsg) {
+	const errLine = `ERROR: subconverter failed: ${errMsg}`;
+	const b64 = base64Encode(dedup(nodesRaw || ''));
+	const commonHeaders = {
+		'content-type': 'text/plain; charset=utf-8',
+		'Profile-Update-Interval': `${SUBUpdateTime}`
+	};
+	if (format === 'clash') {
+		const yaml = `# ${errLine}
+# 订阅转换后端不可用,以下为降级配置(不含分流规则,节点全局代理)
+mixed-port: 7890
+external-controller: 127.0.0.1:9090
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: true
+proxies: []
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,DIRECT
+`;
+		return { body: yaml, headers: { ...commonHeaders, 'Content-Disposition': `attachment; filename*=utf-8''${encodeURIComponent(FileName)}.yaml` } };
+	}
+	if (format === 'singbox') {
+		const json = JSON.stringify({
+			_comment: errLine + ' / 转换后端不可用,请改用 base64 订阅或修复转换后端',
+			log: { level: 'info' },
+			dns: { servers: [{ tag: 'local', address: '223.5.5.5' }] },
+			inbounds: [],
+			outbounds: [{ type: 'direct', tag: 'direct' }],
+			routes: [{ action: 'direct', final: 'direct' }]
+		}, null, 2);
+		return { body: json, headers: { ...commonHeaders, 'Content-Disposition': `attachment; filename*=utf-8''${encodeURIComponent(FileName)}.json` } };
+	}
+	// surge / quanx / loon: 统一返回简单 conf,客户端至少能打开
+	const conf = `# ${errMsg}\n# 订阅转换后端不可用,请改用 base64 订阅或修复转换后端\n[General]\nloglevel = notify\n`;
+	return { body: conf, headers: { ...commonHeaders, 'Content-Disposition': `attachment; filename*=utf-8''${encodeURIComponent(FileName)}.conf` } };
 }
 
 // 并发拉取多个订阅,2s 超时
