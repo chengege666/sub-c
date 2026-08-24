@@ -248,32 +248,33 @@ async function editPage(request, env, url, token) {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-	background: #f5f7fa;
-	color: #2c3e50;
+	background: #0d1117;
+	color: #c9d1d9;
 	padding: 20px;
 	line-height: 1.6;
 }
 .container {
 	max-width: 900px;
 	margin: 0 auto;
-	background: #fff;
+	background: #161b22;
 	border-radius: 12px;
-	box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+	box-shadow: 0 2px 12px rgba(0,0,0,0.5);
 	overflow: hidden;
 }
 .header {
-	background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-	color: #fff;
+	background: linear-gradient(135deg, #1f1f2e 0%, #2d1b3d 100%);
+	color: #e6edf3;
 	padding: 20px 24px;
+	border-bottom: 1px solid #30363d;
 }
-.header h1 { font-size: 20px; font-weight: 600; }
-.header .sub { font-size: 13px; opacity: 0.9; margin-top: 4px; }
+.header h1 { font-size: 20px; font-weight: 600; color: #e6edf3; }
+.header .sub { font-size: 13px; opacity: 0.85; margin-top: 4px; color: #8b949e; }
 .content { padding: 24px; }
 .section { margin-bottom: 24px; }
 .section-title {
 	font-size: 14px;
 	font-weight: 600;
-	color: #606266;
+	color: #c9d1d9;
 	margin-bottom: 12px;
 	display: flex;
 	justify-content: space-between;
@@ -283,13 +284,13 @@ textarea {
 	width: 100%;
 	min-height: 300px;
 	padding: 12px;
-	border: 1px solid #dcdfe6;
+	border: 1px solid #30363d;
 	border-radius: 8px;
 	font-family: "SF Mono", Monaco, "Cascadia Code", Consolas, monospace;
 	font-size: 13px;
 	resize: vertical;
-	background: #fafafa;
-	color: #2c3e50;
+	background: #0d1117;
+	color: #c9d1d9;
 }
 textarea:focus { outline: none; border-color: #667eea; }
 .btn-group { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
@@ -304,26 +305,26 @@ button {
 }
 .btn-primary { background: #667eea; color: #fff; }
 .btn-primary:hover { background: #5568d3; }
-.btn-secondary { background: #f0f2f5; color: #606266; }
-.btn-secondary:hover { background: #e4e7ed; }
+.btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+.btn-secondary:hover { background: #30363d; }
 .info {
-	background: #ecf5ff;
-	border: 1px solid #d9ecff;
+	background: #161b22;
+	border: 1px solid #30363d;
 	border-radius: 8px;
 	padding: 12px 16px;
 	font-size: 13px;
-	color: #409eff;
+	color: #58a6ff;
 	margin-bottom: 16px;
 }
 .link-box {
-	background: #f0f9ff;
+	background: #0d1117;
 	padding: 10px 14px;
 	border-radius: 8px;
 	font-family: monospace;
 	font-size: 12px;
-	color: #1f2d3d;
+	color: #c9d1d9;
 	word-break: break-all;
-	border: 1px solid #d9ecff;
+	border: 1px solid #30363d;
 }
 /* 密码保护遮罩 */
 .lock-overlay {
@@ -331,7 +332,7 @@ button {
 	top: 0; left: 0; right: 0; bottom: 0;
 	backdrop-filter: blur(20px);
 	-webkit-backdrop-filter: blur(20px);
-	background: rgba(255,255,255,0.3);
+	background: rgba(13,17,23,0.6);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -339,24 +340,27 @@ button {
 	border-radius: 12px;
 }
 .lock-box {
-	background: #fff;
+	background: #161b22;
 	padding: 28px 32px;
 	border-radius: 12px;
-	box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+	box-shadow: 0 8px 32px rgba(0,0,0,0.5);
 	text-align: center;
 	min-width: 280px;
+	border: 1px solid #30363d;
 }
-.lock-box h3 { font-size: 16px; margin-bottom: 14px; color: #303133; }
+.lock-box h3 { font-size: 16px; margin-bottom: 14px; color: #e6edf3; }
 .lock-box input {
 	width: 100%;
 	padding: 10px 12px;
-	border: 1px solid #dcdfe6;
+	border: 1px solid #30363d;
 	border-radius: 6px;
 	font-size: 14px;
+	background: #0d1117;
+	color: #c9d1d9;
 	margin-bottom: 12px;
 }
 .lock-box input:focus { outline: none; border-color: #667eea; }
-.lock-box .error { color: #f56c6c; font-size: 12px; margin-top: 8px; min-height: 16px; }
+.lock-box .error { color: #f85149; font-size: 12px; margin-top: 8px; min-height: 16px; }
 .relative { position: relative; }
 .hidden { display: none; }
 </style>
