@@ -56,32 +56,13 @@ export default {
 			return new Response('Not Found', { status: 404 });
 		}
 
-		// fakeToken 回调:供订阅转换后端拉取节点,直接返回 base64
-		if (token === fakeToken || url.pathname === '/' + fakeToken) {
-			const data = env.KV ? (await env.KV.get('LINK.txt') || '') : (env.LINK || MainData);
-			const links = await ADD(data);
-			const [nodes] = await fetchAllSub(links, request, 'v2rayn', userAgentHeader);
-			const merged = dedup(nodes.join('\n'));
-			return new Response(base64Encode(merged), {
-				headers: { 'content-type': 'text/plain; charset=utf-8' }
-			});
-		}
-
-		// 真实 TOKEN 入口
-		// 绑定 KV 时,浏览器访问返回编辑页(含 POST 请求的密码校验/保存)
-		if (env.KV && userAgent.includes('mozilla')) {
-			return editPage(request, env, url, mytoken);
-		}
-
-		// 读取主数据
+		// ---- 统一加载主数据(自建节点 + 订阅链接)----
 		let MainList = '';
 		if (env.KV) {
 			MainList = await env.KV.get('LINK.txt') || '';
 		} else {
 			MainList = env.LINK || MainData;
 		}
-
-		// 分离自建节点与订阅链接
 		const allLinks = await ADD(MainList);
 		let 自建节点 = '';
 		let 订阅链接 = '';
@@ -89,6 +70,40 @@ export default {
 			if (!x) continue;
 			if (x.toLowerCase().startsWith('http')) 订阅链接 += x + '\n';
 			else 自建节点 += x + '\n';
+		}
+		const 订阅链接数组 = [...new Set((await ADD(订阅链接)).filter(item => item?.trim?.()))];
+		let 外部订阅节点 = [];
+		let 外部订阅URLs = '';
+		if (订阅链接数组.length > 0) {
+			const [nodes, subUrls] = await fetchAllSub(订阅链接数组, request, 'v2rayn', userAgentHeader);
+			外部订阅节点 = nodes;
+			外部订阅URLs = subUrls;
+		}
+		// 所有明文节点(自建 + 外部订阅明文/base64 解码)统一合并去重
+		const 所有明文节点 = dedup(自建节点 + '\n' + 外部订阅节点.join('\n'));
+
+		// ---- 识别是否为订阅转换后端的回调请求:强制返回 base64(避免递归)----
+		const isSubConverterRequest =
+			request.headers.get('subconverter-request')
+			|| request.headers.get('subconverter-version')
+			|| userAgent.includes('subconverter');
+
+		// fakeToken 回调(订阅转换后端回调):返回 base64 合并的明文节点
+		// 注意:token == fakeToken 时也要覆盖 subconverter 回调判断
+		const isFakeTokenRequest = token === fakeToken || url.pathname === '/' + fakeToken;
+		if (isFakeTokenRequest || isSubConverterRequest) {
+			return new Response(base64Encode(所有明文节点), {
+				headers: {
+					'content-type': 'text/plain; charset=utf-8',
+					'Profile-Update-Interval': `${SUBUpdateTime}`
+				}
+			});
+		}
+
+		// 真实 TOKEN 入口
+		// 绑定 KV 时,浏览器访问返回编辑页(含 POST 请求的密码校验/保存)
+		if (env.KV && userAgent.includes('mozilla')) {
+			return editPage(request, env, url, mytoken);
 		}
 
 		// 识别订阅格式(按 UA 或 query 参数)
@@ -100,7 +115,6 @@ export default {
 			if (
 				ual.includes('v2rayn') ||
 				ual.includes('v2rayng') ||
-				ual.includes('v2rayn') ||
 				ual.includes('nekobox') ||
 				ual.includes('nekoray') ||
 				ual.includes('shadowrocket') ||
@@ -149,20 +163,9 @@ export default {
 		// query 参数强制覆盖
 		if (url.searchParams.has('b64') || url.searchParams.has('base64')) 订阅格式 = 'base64';
 
-		// 拉取订阅链接
-		const 订阅链接数组 = [...new Set((await ADD(订阅链接)).filter(item => item?.trim?.()))];
-		let req_data = 自建节点;
-		let 订阅转换URL = `${url.origin}/${fakeToken}?token=${fakeToken}`;
-
-		if (订阅链接数组.length > 0) {
-			const [nodes, subUrls] = await fetchAllSub(订阅链接数组, request, 'v2rayn', userAgentHeader);
-			req_data += nodes.join('\n');
-			if (subUrls) 订阅转换URL += '|' + subUrls;
-		}
-
-		// base64 直接返回
+		// base64 直接返回(含 自建节点 + 外部订阅明文/base64 解码结果)
 		if (订阅格式 === 'base64') {
-			return new Response(base64Encode(dedup(req_data)), {
+			return new Response(base64Encode(所有明文节点), {
 				headers: {
 					'content-type': 'text/plain; charset=utf-8',
 					'Profile-Update-Interval': `${SUBUpdateTime}`,
@@ -170,6 +173,12 @@ export default {
 				}
 			});
 		}
+
+		// 构造给 subconverter 的 url 参数:
+		//   1. fakeToken 回调 URL(拉取自建节点 + 外部订阅明文)
+		//   2. 外部 Clash/Singbox 结构化订阅原始 URL(用 | 分隔)
+		let 订阅转换URL = `${url.origin}/${fakeToken}?token=${fakeToken}`;
+		if (外部订阅URLs) 订阅转换URL += '|' + 外部订阅URLs;
 
 		// 其他格式调用转换后端
 		const target = 订阅格式;
@@ -221,6 +230,24 @@ function base64Encode(str) {
 		for (const b of bytes) binary += String.fromCharCode(b);
 		return btoa(binary);
 	}
+}
+
+// UTF-8 安全的 base64 解码
+function base64Decode(str) {
+	try {
+		const bytes = new Uint8Array(atob(str).split('').map(c => c.charCodeAt(0)));
+		return new TextDecoder('utf-8').decode(bytes);
+	} catch (e) {
+		return atob(str);
+	}
+}
+
+// 判断是否为合法 base64(忽略空白字符)
+function isValidBase64(str) {
+	if (!str) return false;
+	const clean = str.replace(/\s/g, '');
+	if (clean.length === 0 || clean.length % 4 !== 0) return false;
+	return /^[A-Za-z0-9+/=]+$/.test(clean);
 }
 
 // MD5(使用 Web Crypto,Cloudflare Workers 支持)
@@ -275,43 +302,83 @@ rules:
 }
 
 // 并发拉取多个订阅,2s 超时
+// 返回 [nodesPlain(明文节点行数组), subConverterUrls(给 subconverter 直接转发的 URL 字符串,用 | 连接)]
+// 分类处理:
+//   - 含 proxies: → Clash 订阅 → 只记录 URL(给 subconverter 自己解析)
+//   - 含 outbounds" + inbounds" → Singbox 订阅 → 只记录 URL
+//   - 含 :// → 明文(vmess/vless/trojan/ss 等) → 直接追加节点
+//   - 合法 base64 → base64 解码后追加
+//   - 其他无法识别 → 异常占位节点(便于用户发现)
 async function fetchAllSub(apiList, request, appendUA, userAgentHeader) {
 	if (!apiList || apiList.length === 0) return [[], ''];
 	apiList = [...new Set(apiList)];
-	const nodes = [];
-	const subUrls = [];
+	let newapi = '';
+	let 订阅转换URLs = '';
+	let 异常订阅 = '';
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 2000);
+
 	try {
-		const results = await Promise.allSettled(apiList.map(apiUrl => {
-			return fetch(apiUrl, {
+		const results = await Promise.allSettled(apiList.map(apiUrl =>
+			fetch(apiUrl, {
 				headers: { 'User-Agent': userAgentHeader || appendUA },
 				signal: controller.signal
-			}).then(r => r.ok ? r.text() : Promise.reject(r));
-		}));
+			}).then(r => r.ok ? r.text() : Promise.reject(r))
+		));
+
 		for (let i = 0; i < results.length; i++) {
 			const r = results[i];
-			if (r.status === 'fulfilled' && r.value) {
-				const text = r.value.trim();
-				// 尝试 base64 解码
-				let decoded = text;
-				try {
-					if (!text.includes('://')) {
-						decoded = atob(text);
-					}
-				} catch (e) {
-					// 非 base64,直接用原文
+			let content = null;
+			let apiUrl = apiList[i];
+			if (r.status === 'fulfilled') {
+				content = r.value;
+			} else {
+				const reason = r.reason;
+				if (reason && reason.name === 'AbortError') {
+					content = '超时';
+				} else {
+					const status = reason && reason.status ? reason.status : '请求失败';
+					console.error(`请求失败: ${apiUrl}, 错误信息: ${status}`);
+					content = null;
 				}
-				nodes.push(decoded);
-				subUrls.push(apiList[i]);
+			}
+
+			if (!content) continue;
+			if (content === '超时') continue;
+
+			// ---- 分类 ----
+			if (content.includes('proxies:')) {
+				// Clash YAML 订阅 → 交给 subconverter
+				订阅转换URLs += '|' + apiUrl;
+			} else if (content.includes('outbounds"') && content.includes('inbounds"')) {
+				// Singbox JSON 订阅 → 交给 subconverter
+				订阅转换URLs += '|' + apiUrl;
+			} else if (content.includes('://')) {
+				// 明文节点/订阅 → 直接拼接
+				newapi += content + '\n';
+			} else if (isValidBase64(content)) {
+				// base64 订阅 → 解码后拼接
+				try {
+					newapi += base64Decode(content) + '\n';
+				} catch (e) {
+					const 异常订阅LINK = `trojan://subc@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#Base64解码失败_${apiUrl.split('://')[1]?.split('/')[0] || apiUrl}`;
+					异常订阅 += `${异常订阅LINK}\n`;
+				}
+			} else {
+				// 异常订阅 → 占位节点
+				const host = apiUrl.split('://')[1]?.split('/')[0] || apiUrl;
+				const 异常订阅LINK = `trojan://subc@127.0.0.1:8888?security=tls&allowInsecure=1&type=tcp&headerType=none#异常订阅_${host}`;
+				异常订阅 += `${异常订阅LINK}\n`;
 			}
 		}
 	} catch (e) {
-		// 超时或异常,返回已获取的
+		console.error('fetchAllSub 总异常:', e);
 	} finally {
 		clearTimeout(timeout);
 	}
-	return [nodes, subUrls.join('|')];
+
+	const 订阅内容 = await ADD(newapi + 异常订阅);
+	return [订阅内容, 订阅转换URLs];
 }
 
 // 编辑页(含密码保护)
