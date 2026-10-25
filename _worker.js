@@ -403,52 +403,26 @@ async function fetchAllSub(apiList, request, appendUA, userAgentHeader) {
 function patchRealityFields(yaml) {
 	if (!yaml) return yaml;
 	const lines = yaml.split('\n');
-	const output = [];
-	let nodeLines = [];
-	let inNode = false;
-
-	const flushNode = () => {
-		if (nodeLines.length === 0) return;
-		const nodeText = nodeLines.join('\n');
-		if (nodeText.includes('reality-opts')) {
-			const hasFp = /client-fingerprint\s*:/.test(nodeText);
-			const hasFlow = /^\s*flow\s*:/m.test(nodeText);
-			if (!hasFp || !hasFlow) {
-				const insertIndex = nodeLines.findIndex(l => /type:\s*["']?vless["']?/.test(l));
-				if (insertIndex >= 0) {
-					const indent = nodeLines[insertIndex].match(/^(\s*)/)[1];
-					const newLines = [];
-					if (!hasFp) {
-						newLines.push(`${indent}client-fingerprint: chrome`);
-					}
-					if (!hasFlow) {
-						newLines.push(`${indent}flow: xtls-rprx-vision`);
-					}
-					nodeLines.splice(insertIndex + 1, 0, ...newLines);
-				}
+	const result = [];
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		// 找到 reality-opts: 行,在其之前插入缺失字段
+		if (/^\s+reality-opts:\s*$/.test(line)) {
+			const indent = line.match(/^(\s*)/)[1];
+			// 向前查找当前节点是否已有 client-fingerprint / flow
+			let hasFp = false;
+			let hasFlow = false;
+			for (let j = result.length - 1; j >= 0; j--) {
+				if (/^\s*-\s/.test(result[j])) break;
+				if (/client-fingerprint\s*:/.test(result[j])) hasFp = true;
+				if (/^\s*flow\s*:/.test(result[j])) hasFlow = true;
 			}
+			if (!hasFp) result.push(`${indent}client-fingerprint: chrome`);
+			if (!hasFlow) result.push(`${indent}flow: xtls-rprx-vision`);
 		}
-		output.push(...nodeLines);
-		nodeLines = [];
-	};
-
-	for (const line of lines) {
-		// 只匹配 proxies 下的顶级节点(2空格缩进),不处理 proxy-groups 的嵌套列表
-		if (/^  - /.test(line)) {
-			flushNode();
-			inNode = true;
-		} else if (inNode && !/^\s/.test(line) && line.trim() !== '') {
-			flushNode();
-			inNode = false;
-		}
-		if (inNode) {
-			nodeLines.push(line);
-		} else {
-			output.push(line);
-		}
+		result.push(line);
 	}
-	flushNode();
-	return output.join('\n');
+	return result.join('\n');
 }
 
 // 编辑页(含密码保护)
