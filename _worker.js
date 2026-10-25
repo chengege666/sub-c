@@ -433,7 +433,8 @@ function patchRealityFields(yaml) {
 	};
 
 	for (const line of lines) {
-		if (/^\s*-\s/.test(line)) {
+		// 只匹配 proxies 下的顶级节点(2空格缩进),不处理 proxy-groups 的嵌套列表
+		if (/^  - /.test(line)) {
 			flushNode();
 			inNode = true;
 		} else if (inNode && !/^\s/.test(line) && line.trim() !== '') {
