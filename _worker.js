@@ -202,11 +202,7 @@ export default {
 		try {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
 			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
-			let content = await resp.text();
-			// 补全旧版 subconverter 丢失的 Reality 字段(client-fingerprint/flow)
-			if (订阅格式 === 'clash') {
-				content = patchRealityFields(content);
-			}
+			const content = await resp.text();
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
 			return new Response(content, {
 				headers: {
@@ -217,7 +213,7 @@ export default {
 			});
 		} catch (e) {
 			// 结构化格式客户端:转换失败时返回对应格式的最小可用配置(含错误注释),防止 parse 错
-			const nodes = dedup(所有明文节点);
+			const nodes = dedup(req_data);
 			const fallback = buildFallbackConfig(订阅格式, nodes, String(e.message || e));
 			return new Response(fallback.body, { headers: fallback.headers });
 		}
@@ -397,32 +393,6 @@ async function fetchAllSub(apiList, request, appendUA, userAgentHeader) {
 
 	const 订阅内容 = await ADD(newapi + 异常订阅);
 	return [订阅内容, 订阅转换URLs];
-}
-
-// 补全旧版 subconverter 丢失的 Reality 字段(client-fingerprint/flow)
-function patchRealityFields(yaml) {
-	if (!yaml) return yaml;
-	const lines = yaml.split('\n');
-	const result = [];
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
-		// 找到 reality-opts: 行,在其之前插入缺失字段
-		if (/^\s+reality-opts:/.test(line)) {
-			const indent = line.match(/^(\s*)/)[1];
-			// 向前查找当前节点是否已有 client-fingerprint / flow
-			let hasFp = false;
-			let hasFlow = false;
-			for (let j = result.length - 1; j >= 0; j--) {
-				if (/^\s*-\s/.test(result[j])) break;
-				if (/client-fingerprint\s*:/.test(result[j])) hasFp = true;
-				if (/^\s*flow\s*:/.test(result[j])) hasFlow = true;
-			}
-			if (!hasFp) result.push(`${indent}client-fingerprint: chrome`);
-			if (!hasFlow) result.push(`${indent}flow: xtls-rprx-vision`);
-		}
-		result.push(line);
-	}
-	return result.join('\n');
 }
 
 // 编辑页(含密码保护)
