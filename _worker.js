@@ -213,7 +213,7 @@ export default {
 			});
 		} catch (e) {
 			// 结构化格式客户端:转换失败时返回对应格式的最小可用配置(含错误注释),防止 parse 错
-			const nodes = dedup(req_data);
+			const nodes = dedup(所有明文节点);
 			const fallback = buildFallbackConfig(订阅格式, nodes, String(e.message || e));
 			return new Response(fallback.body, { headers: fallback.headers });
 		}
