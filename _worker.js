@@ -407,7 +407,7 @@ function patchRealityFields(yaml) {
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		// 找到 reality-opts: 行,在其之前插入缺失字段
-		if (/^\s+reality-opts:\s*$/.test(line)) {
+		if (/^\s+reality-opts:/.test(line)) {
 			const indent = line.match(/^(\s*)/)[1];
 			// 向前查找当前节点是否已有 client-fingerprint / flow
 			let hasFp = false;
