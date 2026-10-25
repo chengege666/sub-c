@@ -202,7 +202,14 @@ export default {
 		try {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
 			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
-			const content = await resp.text();
+			let content = await resp.text();
+			// 补全旧版 subconverter 丢失的 Reality 字段(client-fingerprint/flow)
+			if (订阅格式 === 'clash') {
+				const realityMap = buildRealityMap(所有明文节点);
+				if (realityMap.size > 0) {
+					content = patchRealityFields(content, realityMap);
+				}
+			}
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
 			return new Response(content, {
 				headers: {
@@ -393,6 +400,91 @@ async function fetchAllSub(apiList, request, appendUA, userAgentHeader) {
 
 	const 订阅内容 = await ADD(newapi + 异常订阅);
 	return [订阅内容, 订阅转换URLs];
+}
+
+// 从明文节点中提取 Reality VLESS 参数映射(server:port:uuid -> {flow, fp})
+function buildRealityMap(plainText) {
+	const map = new Map();
+	if (!plainText) return map;
+	const lines = plainText.split('\n');
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith('vless://')) continue;
+		if (!trimmed.includes('security=reality')) continue;
+		const uuidMatch = trimmed.match(/^vless:\/\/([^@]+)@/);
+		if (!uuidMatch) continue;
+		const uuid = uuidMatch[1];
+		const hostMatch = trimmed.match(/@([^:?]+):(\d+)/);
+		if (!hostMatch) continue;
+		const server = hostMatch[1];
+		const port = hostMatch[2];
+		const flowMatch = trimmed.match(/[?&]flow=([^&]+)/);
+		const fpMatch = trimmed.match(/[?&]fp=([^&]+)/);
+		const key = `${server}:${port}:${uuid}`;
+		map.set(key, {
+			flow: flowMatch ? flowMatch[1] : '',
+			fp: fpMatch ? fpMatch[1] : 'chrome'
+		});
+	}
+	return map;
+}
+
+// 补全旧版 subconverter 丢失的 Reality 字段(client-fingerprint/flow)
+function patchRealityFields(yaml, realityMap) {
+	if (!yaml || !realityMap || realityMap.size === 0) return yaml;
+	const lines = yaml.split('\n');
+	const output = [];
+	let nodeLines = [];
+	let inNode = false;
+
+	const flushNode = () => {
+		if (nodeLines.length === 0) return;
+		const nodeText = nodeLines.join('\n');
+		if (nodeText.includes('reality-opts')) {
+			const server = (nodeText.match(/server:\s*["']?([^\s"']+)["']?/) || [])[1] || '';
+			const port = (nodeText.match(/port:\s*(\d+)/) || [])[1] || '';
+			const uuid = (nodeText.match(/uuid:\s*["']?([^\s"']+)["']?/) || [])[1] || '';
+			const key = `${server}:${port}:${uuid}`;
+			const params = realityMap.get(key);
+			if (params) {
+				const hasFp = /client-fingerprint\s*:/.test(nodeText);
+				const hasFlow = /^\s*flow\s*:/m.test(nodeText);
+				if (!hasFp || !hasFlow) {
+					const insertIndex = nodeLines.findIndex(l => /type:\s*["']?vless["']?/.test(l));
+					if (insertIndex >= 0) {
+						const indent = nodeLines[insertIndex].match(/^(\s*)/)[1];
+						const newLines = [];
+						if (!hasFp) {
+							newLines.push(`${indent}client-fingerprint: ${params.fp || 'chrome'}`);
+						}
+						if (!hasFlow) {
+							newLines.push(`${indent}flow: ${params.flow || 'xtls-rprx-vision'}`);
+						}
+						nodeLines.splice(insertIndex + 1, 0, ...newLines);
+					}
+				}
+			}
+		}
+		output.push(...nodeLines);
+		nodeLines = [];
+	};
+
+	for (const line of lines) {
+		if (/^\s*-\s/.test(line)) {
+			flushNode();
+			inNode = true;
+		} else if (inNode && !/^\s/.test(line) && line.trim() !== '') {
+			flushNode();
+			inNode = false;
+		}
+		if (inNode) {
+			nodeLines.push(line);
+		} else {
+			output.push(line);
+		}
+	}
+	flushNode();
+	return output.join('\n');
 }
 
 // 编辑页(含密码保护)
