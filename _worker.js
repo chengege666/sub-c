@@ -203,7 +203,7 @@ export default {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
 			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
 			const content = await resp.text();
-			const fixed = 订阅格式 === 'clash' ? fixAnyTLSFingerprint(content) : content;
+			const fixed = 订阅格式 === 'clash' ? fixRealityMLKEM(fixAnyTLSFingerprint(content)) : content;
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
 			return new Response(fixed, {
 				headers: {
@@ -255,6 +255,61 @@ function fixAnyTLSFingerprint(yaml) {
 		// 流式写法:{name: xx, type: anytls, ... fingerprint: chrome ...}
 		if (/type:\s*anytls/.test(line) && !line.includes('client-fingerprint') && /fingerprint:/.test(line)) {
 			lines[i] = line.replace(/fingerprint:/, 'client-fingerprint:');
+		}
+	}
+	return lines.join('\n');
+}
+
+// Xray 26.9.9+ 的 REALITY 服务端要求客户端使用 X25519MLKEM768 密钥交换,
+// mihomo 默认关闭该选项,导致握手认证失败。此处给 vless reality 节点补上开关。
+function fixRealityMLKEM(yaml) {
+	if (!yaml || !yaml.includes('reality-opts')) return yaml;
+	const lines = yaml.split('\n');
+	let isVless = false;
+	// 给内联写法的 reality-opts 追加字段
+	const addToInline = (line) => {
+		if (/reality-opts:\s*\{\s*\}/.test(line)) {
+			return line.replace(/reality-opts:\s*\{\s*\}/, 'reality-opts: {support-x25519mlkem768: true}');
+		}
+		return line.replace(/(reality-opts:\s*\{)\s*/, '$1 support-x25519mlkem768: true, ');
+	};
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		// 流式写法:type 与 reality-opts 在同一个节点行
+		if (/type:\s*vless/.test(line) && line.includes('reality-opts:') && !line.includes('support-x25519mlkem768')) {
+			lines[i] = addToInline(line);
+			continue;
+		}
+		// 块状节点以 "- " 开头,遇到新节点时重置标记
+		if (/^\s*-\s/.test(line) && !/^\s*-\s*\{/.test(line)) isVless = false;
+		if (/^\s*type:\s*vless\s*$/.test(line)) {
+			isVless = true;
+			continue;
+		}
+		if (!isVless) continue;
+		// 块状写法:reality-opts 单独一行,把开关插到子字段末尾
+		const blockMatch = line.match(/^(\s*)reality-opts:\s*$/);
+		if (blockMatch) {
+			const parentIndent = blockMatch[1].length;
+			let childIndent = parentIndent + 2;
+			let lastChild = i;
+			let hasFlag = false;
+			for (let j = i + 1; j < lines.length; j++) {
+				const childMatch = lines[j].match(/^(\s+)(\S.*)$/);
+				if (!childMatch || childMatch[1].length <= parentIndent) break;
+				childIndent = childMatch[1].length;
+				if (/^support-x25519mlkem768\s*:/.test(childMatch[2])) hasFlag = true;
+				lastChild = j;
+			}
+			if (!hasFlag && lastChild > i) {
+				lines.splice(lastChild + 1, 0, ' '.repeat(childIndent) + 'support-x25519mlkem768: true');
+				i = lastChild + 1;
+			}
+			continue;
+		}
+		// 块状写法:reality-opts 内联在字段行
+		if (line.includes('reality-opts:') && !line.includes('support-x25519mlkem768')) {
+			lines[i] = addToInline(line);
 		}
 	}
 	return lines.join('\n');
