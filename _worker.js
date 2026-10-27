@@ -203,8 +203,9 @@ export default {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
 			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
 			const content = await resp.text();
+			const fixed = 订阅格式 === 'clash' ? fixAnyTLSFingerprint(content) : content;
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
-			return new Response(content, {
+			return new Response(fixed, {
 				headers: {
 					'content-type': 'text/plain; charset=utf-8',
 					'Profile-Update-Interval': `${SUBUpdateTime}`,
@@ -232,6 +233,31 @@ async function ADD(envadd) {
 function dedup(text) {
 	const lines = new Set(text.split('\n'));
 	return [...lines].filter(l => l?.trim()).join('\n');
+}
+
+// subconverter 生成 anytls 节点时把 uTLS 指纹写进了 fingerprint 字段,
+// mihomo 会把 fingerprint 当作服务器证书 SHA256 指纹校验,导致握手失败。
+// 此处仅对 anytls 节点将其改回 client-fingerprint,其他内容保持原样。
+function fixAnyTLSFingerprint(yaml) {
+	if (!yaml || !yaml.includes('anytls')) return yaml;
+	const lines = yaml.split('\n');
+	let isAnyTLS = false;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		// 块状节点以 "- " 开头,遇到新节点时重置标记
+		if (/^\s*-\s/.test(line) && !/^\s*-\s*\{/.test(line)) isAnyTLS = false;
+		// 块状写法:type 单独一行
+		if (/^\s*type:\s*anytls\s*$/.test(line)) isAnyTLS = true;
+		if (isAnyTLS && /^\s+fingerprint:\s*\S/.test(line)) {
+			lines[i] = line.replace(/^(\s+)fingerprint:/, '$1client-fingerprint:');
+			continue;
+		}
+		// 流式写法:{name: xx, type: anytls, ... fingerprint: chrome ...}
+		if (/type:\s*anytls/.test(line) && !line.includes('client-fingerprint') && /fingerprint:/.test(line)) {
+			lines[i] = line.replace(/fingerprint:/, 'client-fingerprint:');
+		}
+	}
+	return lines.join('\n');
 }
 
 // UTF-8 安全的 base64 编码
