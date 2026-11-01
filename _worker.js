@@ -569,6 +569,49 @@ button {
 	word-break: break-all;
 	border: 1px solid #30363d;
 }
+/* 分客户端订阅地址 */
+.client-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 0;
+	border-bottom: 1px dashed #21262d;
+}
+.client-row:last-child { border-bottom: none; }
+.client-name {
+	flex: 0 0 200px;
+	font-size: 13px;
+	color: #e6edf3;
+}
+.client-name .hint {
+	display: block;
+	font-size: 11px;
+	color: #8b949e;
+	font-weight: 400;
+}
+.client-url {
+	flex: 1 1 auto;
+	min-width: 0;
+	background: #0d1117;
+	padding: 6px 10px;
+	border-radius: 6px;
+	font-family: monospace;
+	font-size: 12px;
+	color: #c9d1d9;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	border: 1px solid #30363d;
+}
+.client-copy {
+	flex: 0 0 auto;
+	padding: 6px 14px;
+	font-size: 12px;
+}
+@media (max-width: 640px) {
+	.client-row { flex-wrap: wrap; }
+	.client-name { flex: 1 1 100%; }
+}
 /* 密码保护遮罩 */
 .lock-overlay {
 	position: absolute;
@@ -619,6 +662,13 @@ button {
 			订阅地址(填入客户端):
 			<div class="link-box" id="subUrl" onclick="copySub()" title="点击复制" style="cursor:pointer"></div>
 		</div>
+		<div class="section">
+			<div class="section-title">
+				<span>分客户端订阅地址</span>
+				<span style="font-weight:400;color:#909399;font-size:12px">按你用的软件选对应一行,点击复制</span>
+			</div>
+			<div id="clientList"></div>
+		</div>
 		<div class="section relative" id="editSection">
 			<div class="section-title">
 				<span>节点与订阅列表</span>
@@ -652,6 +702,70 @@ const SUB_URL = location.origin + '/' + TOKEN;
 document.getElementById('subUrl').textContent = SUB_URL;
 document.getElementById('links').value = ${JSON.stringify(currentData)};
 updateCount();
+
+// ---- 分客户端订阅地址 ----
+const CLIENTS = [
+	{ name: '通用 / base64', hint: 'v2rayN · v2rayNG · NekoBox · Shadowrocket', url: SUB_URL + '?b64=1' },
+	{ name: 'Clash 系', hint: 'Clash Verge · Mihomo · Stash · Karing · Hiddify', url: SUB_URL + '?clash=1' },
+	{ name: 'Sing-box', hint: 'sing-box · fluxbox · Hiddify(内核)', url: SUB_URL + '?sb=1' },
+	{ name: 'Surge', hint: 'Surge · Surfboard', url: SUB_URL + '?surge=1' },
+	{ name: 'Quantumult X', hint: '圈', url: SUB_URL + '?quanx=1' },
+	{ name: 'Loon', hint: 'Loon', url: SUB_URL + '?loon=1' }
+];
+const clientList = document.getElementById('clientList');
+CLIENTS.forEach(c => {
+	const row = document.createElement('div');
+	row.className = 'client-row';
+
+	const name = document.createElement('div');
+	name.className = 'client-name';
+	name.appendChild(document.createTextNode(c.name));
+	const hint = document.createElement('span');
+	hint.className = 'hint';
+	hint.textContent = c.hint;
+	name.appendChild(hint);
+
+	const urlBox = document.createElement('div');
+	urlBox.className = 'client-url';
+	urlBox.textContent = c.url;
+	urlBox.title = c.url;
+
+	const btn = document.createElement('button');
+	btn.className = 'btn-secondary client-copy';
+	btn.textContent = '复制';
+	btn.onclick = () => copyText(c.url, btn);
+
+	row.appendChild(name);
+	row.appendChild(urlBox);
+	row.appendChild(btn);
+	clientList.appendChild(row);
+});
+
+function copyText(text, btn) {
+	const done = () => {
+		if (!btn) return alert('已复制: ' + text);
+		const old = btn.textContent;
+		btn.textContent = '已复制';
+		setTimeout(() => { btn.textContent = old; }, 1500);
+	};
+	if (navigator.clipboard && window.isSecureContext) {
+		navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+	} else {
+		fallbackCopy(text, done);
+	}
+}
+
+function fallbackCopy(text, done) {
+	const ta = document.createElement('textarea');
+	ta.value = text;
+	ta.style.position = 'fixed';
+	ta.style.opacity = '0';
+	document.body.appendChild(ta);
+	ta.select();
+	try { document.execCommand('copy'); } catch (e) {}
+	document.body.removeChild(ta);
+	done();
+}
 
 if (HAS_PASSWORD) {
 	// 每次访问都要求输入密码,不缓存解锁状态
