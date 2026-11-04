@@ -203,7 +203,7 @@ export default {
 			const resp = await fetch(subConverterUrl, { headers: { 'User-Agent': userAgentHeader || 'v2rayN' } });
 			if (!resp.ok) throw new Error('subconverter http ' + resp.status);
 			const content = await resp.text();
-			const fixed = 订阅格式 === 'clash' ? fixRealityMLKEM(fixAnyTLSFingerprint(content)) : content;
+			const fixed = 订阅格式 === 'clash' ? fixXHTTPDowngrade(fixRealityMLKEM(fixAnyTLSFingerprint(content)), 所有明文节点) : content;
 			const ext = 订阅格式 === 'clash' ? 'yaml' : (订阅格式 === 'singbox' ? 'json' : 'conf');
 			return new Response(fixed, {
 				headers: {
@@ -313,6 +313,238 @@ function fixRealityMLKEM(yaml) {
 		}
 	}
 	return lines.join('\n');
+}
+
+// ---- XHTTP 兜底修正 ----
+// 部分转换链路会把 vless + xhttp 降级成 h2/tcp,导致 Clash/OpenClash 无法连接。
+// 这里依据原始明文链接,把被降级节点的 network 改回 xhttp,并重建 xhttp-opts。
+function collectXHTTPNodes(plainNodes) {
+	const result = [];
+	if (!plainNodes) return result;
+	for (const raw of plainNodes.split('\n')) {
+		const line = raw.trim();
+		if (!/^vless:\/\//i.test(line)) continue;
+		try {
+			const u = new URL(line);
+			const p = u.searchParams;
+			if ((p.get('type') || '').toLowerCase() !== 'xhttp') continue;
+			result.push({
+				server: u.hostname.replace(/^\[/, '').replace(/\]$/, ''),
+				port: String(u.port || '443'),
+				uuid: decodeURIComponent(u.username || ''),
+				path: p.get('path') || '/',
+				host: p.get('host') || p.get('sni') || '',
+				mode: p.get('mode') || 'auto',
+				name: decodeURIComponent(u.hash.replace(/^#/, ''))
+			});
+		} catch (e) {
+			// 无法解析的链接直接忽略
+		}
+	}
+	return result;
+}
+
+// 输出 YAML 标量:普通值原样输出,含特殊字符时加双引号,不做 URL 编码
+function yamlPlainScalar(value) {
+	const text = String(value == null ? '' : value);
+	if (text === '') return '""';
+	if (/^[A-Za-z0-9_./:@+-]+$/.test(text) && !/^(true|false|null|yes|no|on|off|~)$/i.test(text)) return text;
+	return '"' + text.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
+// 读取 YAML 标量并去掉数组/引号,只取第一个值
+function yamlScalarString(value) {
+	let text = String(value == null ? '' : value).trim();
+	if (text.startsWith('[') && text.endsWith(']')) text = text.slice(1, -1);
+	text = (text.split(',')[0] || '').trim();
+	if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+		text = text.slice(1, -1);
+	}
+	return text.trim();
+}
+
+// 块状写法:修复单个 "- name: xxx" 节点
+function fixXHTTPBlock(block, infos) {
+	const first = block[0];
+	const head = first.replace(/^\s*-\s+/, '');
+	const headMatch = head.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
+	if (!headMatch || headMatch[1] !== 'name') return block;
+	const fieldIndent = first.match(/^\s*/)[0].length + 2;
+	const getField = (key) => {
+		for (const l of block) {
+			const m = l.match(new RegExp('^\\s*' + key + '\\s*:\\s*(.*)$'));
+			if (m) return m[1];
+		}
+		return '';
+	};
+	if (yamlScalarString(getField('type')) !== 'vless') return block;
+	const server = yamlScalarString(getField('server'));
+	const port = yamlScalarString(getField('port')) || '443';
+	const uuid = yamlScalarString(getField('uuid'));
+	const name = yamlScalarString(headMatch[2]);
+	const info = infos.find(x =>
+		(uuid && x.uuid && uuid === x.uuid && server === x.server && port === x.port) ||
+		(name && x.name && name === x.name && server === x.server)
+	);
+	if (!info) return block;
+
+	const result = block.slice();
+	const netIdx = result.findIndex(l => /^\s*network\s*:/.test(l));
+	// 1. network 统一改成 xhttp
+	if (netIdx >= 0) {
+		result[netIdx] = result[netIdx].replace(/^(\s*)network\s*:.*$/, '$1network: xhttp');
+	} else {
+		const typeIdx = result.findIndex(l => /^\s*type\s*:\s*vless\s*$/.test(l));
+		result.splice(typeIdx >= 0 ? typeIdx + 1 : 1, 0, ' '.repeat(fieldIndent) + 'network: xhttp');
+	}
+	// 2. h2-opts / http-opts 重建为 xhttp-opts(host 强制字符串)
+	const optsIdx = result.findIndex(l => /^\s*(h2-opts|http-opts)\s*:/.test(l));
+	const opts = [
+		'path: ' + yamlPlainScalar(info.path),
+		'host: ' + yamlPlainScalar(info.host || info.server),
+		'mode: ' + yamlPlainScalar(info.mode)
+	];
+	if (optsIdx >= 0) {
+		const optsIndent = result[optsIdx].match(/^\s*/)[0].length;
+		if (result[optsIdx].includes('{')) {
+			result[optsIdx] = ' '.repeat(optsIndent) + 'xhttp-opts: {' + opts.join(', ') + '}';
+		} else {
+			let end = optsIdx + 1;
+			let childIndent = optsIndent + 2;
+			for (let k = optsIdx + 1; k < result.length; k++) {
+				if (result[k].trim() === '') break;
+				const indent = result[k].match(/^\s*/)[0].length;
+				if (indent <= optsIndent) break;
+				childIndent = indent;
+				break;
+			}
+			while (end < result.length) {
+				if (result[end].trim() === '') break;
+				const indent = result[end].match(/^\s*/)[0].length;
+				if (indent <= optsIndent) break;
+				end++;
+			}
+			result.splice(optsIdx, end - optsIdx, ' '.repeat(optsIndent) + 'xhttp-opts:');
+			for (let k = 0; k < opts.length; k++) {
+				result.splice(optsIdx + 1 + k, 0, ' '.repeat(childIndent) + opts[k]);
+			}
+		}
+	} else {
+		const childIndent = fieldIndent + 2;
+		const insertLines = [
+			' '.repeat(fieldIndent) + 'xhttp-opts:',
+			' '.repeat(childIndent) + opts[0],
+			' '.repeat(childIndent) + opts[1],
+			' '.repeat(childIndent) + opts[2]
+		];
+		const netAt = result.findIndex(l => /^\s*network\s*:\s*xhttp\s*$/.test(l));
+		if (netAt >= 0) result.splice(netAt + 1, 0, ...insertLines);
+	}
+	return result;
+}
+
+// 流式写法:修复单个 "- {name: xxx, ...}" 节点
+function fixXHTTPInline(line, infos) {
+	const indent = line.match(/^\s*/)[0];
+	const body = line.trim();
+	if (!/type:\s*vless/.test(body)) return line;
+	const pick = (key) => {
+		const m = body.match(new RegExp(key + ':\\s*([^,}]+)'));
+		return m ? yamlScalarString(m[1]) : '';
+	};
+	const name = pick('name');
+	const server = pick('server');
+	const port = pick('port') || '443';
+	const uuid = pick('uuid');
+	const info = infos.find(x =>
+		(uuid && x.uuid && uuid === x.uuid && server === x.server && port === x.port) ||
+		(name && x.name && name === x.name && server === x.server)
+	);
+	if (!info) return line;
+
+	let fixed = body;
+	if (/network\s*:/.test(fixed)) {
+		fixed = fixed.replace(/network\s*:\s*[^,}]*/, 'network: xhttp');
+	} else {
+		fixed = fixed.replace(/type\s*:\s*vless/, 'type: vless, network: xhttp');
+	}
+	const opts = 'path: ' + yamlPlainScalar(info.path) + ', host: ' + yamlPlainScalar(info.host || info.server) + ', mode: ' + yamlPlainScalar(info.mode);
+	if (/xhttp-opts\s*:\s*\{[^}]*\}/.test(fixed)) {
+		fixed = fixed.replace(/xhttp-opts\s*:\s*\{[^}]*\}/, 'xhttp-opts: {' + opts + '}');
+	} else if (/(h2-opts|http-opts)\s*:\s*\{[^}]*\}/.test(fixed)) {
+		fixed = fixed.replace(/(h2-opts|http-opts)\s*:\s*\{[^}]*\}/, 'xhttp-opts: {' + opts + '}');
+	} else if (/(h2-opts|http-opts)\s*:/.test(fixed)) {
+		fixed = fixed.replace(/(h2-opts|http-opts)\s*:\s*[^,}]*/, 'xhttp-opts: {' + opts + '}');
+	} else {
+		fixed = fixed.replace('network: xhttp', 'network: xhttp, xhttp-opts: {' + opts + '}');
+	}
+	return indent + fixed;
+}
+
+// 仅在 proxies 区扫描节点,块状与流式都支持
+function fixXHTTPDowngrade(yaml, plainNodes) {
+	if (!yaml || !yaml.includes('vless')) return yaml;
+	const infos = collectXHTTPNodes(plainNodes);
+	if (infos.length === 0) return yaml;
+	const lines = yaml.split('\n');
+	const out = [];
+	let inProxies = false;
+	let proxiesIndent = -1;
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (/^\s*proxies\s*:\s*$/.test(line)) {
+			inProxies = true;
+			proxiesIndent = line.match(/^\s*/)[0].length;
+			out.push(line);
+			i++;
+			continue;
+		}
+		if (!inProxies) {
+			out.push(line);
+			i++;
+			continue;
+		}
+		// proxies 区结束:出现同级或更浅的顶层键
+		if (line.trim() !== '' && !/^\s*-\s/.test(line)) {
+			const indent = line.match(/^\s*/)[0].length;
+			if (indent <= proxiesIndent) {
+				inProxies = false;
+				out.push(line);
+				i++;
+				continue;
+			}
+		}
+		// 流式写法
+		if (/^\s*-\s*\{.*\}\s*$/.test(line)) {
+			out.push(fixXHTTPInline(line, infos));
+			i++;
+			continue;
+		}
+		// 块状写法
+		const start = line.match(/^(\s*)-\s+(\S.*)$/);
+		if (start) {
+			const dashIndent = start[1].length;
+			const block = [line];
+			let j = i + 1;
+			for (; j < lines.length; j++) {
+				const next = lines[j];
+				if (next.trim() === '') break;
+				// 只有与当前条目同级的 "- " 才是下一个节点;更深缩进的是 alpn/host 等列表项
+				const nextDash = next.match(/^(\s*)-\s/);
+				if (nextDash && nextDash[1].length <= dashIndent) break;
+				const indent = next.match(/^\s*/)[0].length;
+				if (indent <= dashIndent) break;
+				block.push(next);
+			}
+			out.push(...fixXHTTPBlock(block, infos));
+			i = j;
+			continue;
+		}
+		out.push(line);
+		i++;
+	}
+	return out.join('\n');
 }
 
 // UTF-8 安全的 base64 编码
