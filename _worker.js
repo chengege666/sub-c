@@ -316,8 +316,13 @@ function fixRealityMLKEM(yaml) {
 }
 
 // ---- XHTTP 兜底修正 ----
-// 部分转换链路会把 vless + xhttp 降级成 h2/tcp,导致 Clash/OpenClash 无法连接。
-// 这里依据原始明文链接,把被降级节点的 network 改回 xhttp,并重建 xhttp-opts。
+// 根因:subconverter v0.9.9 的 subparser.cpp 能解析 vless + type=xhttp,
+// 但 subexport.cpp 的 VLESS clash 导出 switch 没有 case "xhttp"_hash,
+// 导致节点被 default: continue 跳过,或在某些链路里被降级成 h2/tcp。
+// 本函数同时处理三种情况:
+//   1. 后端正常输出 xhttp → 保持原样
+//   2. 后端降级成 h2/tcp → 改回 network: xhttp + xhttp-opts
+//   3. 后端完全丢失节点 → 从原始 vless 链接重建完整节点块注入 proxies 区
 function collectXHTTPNodes(plainNodes) {
 	const result = [];
 	if (!plainNodes) return result;
@@ -328,18 +333,39 @@ function collectXHTTPNodes(plainNodes) {
 			const u = new URL(line);
 			const p = u.searchParams;
 			if ((p.get('type') || '').toLowerCase() !== 'xhttp') continue;
+			// alpn 可能是逗号分隔
+			let alpnRaw = p.get('alpn') || '';
+			let alpnList = [];
+			if (alpnRaw) alpnList = alpnRaw.split(',').map(s => s.trim()).filter(Boolean);
+			// reality 字段
+			const security = (p.get('security') || '').toLowerCase();
+			const isReality = security === 'reality';
+			// skip-cert-verify:1 / 0
+			let scv = p.get('allowInsecure') || p.get('scv') || '';
+			if (!scv && security === 'tls') scv = '1';
 			result.push({
+				name: decodeURIComponent(u.hash.replace(/^#/, '')) || u.hostname,
 				server: u.hostname.replace(/^\[/, '').replace(/\]$/, ''),
 				port: String(u.port || '443'),
 				uuid: decodeURIComponent(u.username || ''),
+				tls: security === 'tls' || isReality,
+				servername: p.get('sni') || p.get('host') || (isReality ? '' : ''),
+				alpnList,
+				fp: p.get('fp') || '',
+				encryption: p.get('encryption') || 'none',
+				packetEncoding: p.get('packet-encoding') || '',
+				scv: scv === '1' || scv.toLowerCase() === 'true',
+				// xhttp 核心字段
 				path: p.get('path') || '/',
-				host: p.get('host') || p.get('sni') || '',
+				host: p.get('host') || p.get('sni') || u.hostname,
 				mode: p.get('mode') || 'auto',
-				name: decodeURIComponent(u.hash.replace(/^#/, ''))
+				// reality
+				isReality,
+				pbk: p.get('pbk') || '',
+				sid: p.get('sid') || '',
+				flow: p.get('flow') || ''
 			});
-		} catch (e) {
-			// 无法解析的链接直接忽略
-		}
+		} catch (e) { /* 忽略解析失败 */ }
 	}
 	return result;
 }
@@ -363,8 +389,55 @@ function yamlScalarString(value) {
 	return text.trim();
 }
 
+// 从原始 vless 链接提取的 info 构造完整 Clash YAML 块状节点
+function buildXHTTPNodeBlock(info, dashIndent) {
+	const f = ' '.repeat(dashIndent + 2); // 字段缩进
+	const child = f + '  ';               // 子字段缩进(xhttp-opts/alpn)
+	const lines = [];
+	lines.push('- ' + 'name: ' + yamlPlainScalar(info.name));
+	lines.push(f + 'type: vless');
+	lines.push(f + 'server: ' + yamlPlainScalar(info.server));
+	lines.push(f + 'port: ' + info.port);
+	lines.push(f + 'uuid: ' + yamlPlainScalar(info.uuid));
+	if (info.encryption && info.encryption !== 'none') {
+		lines.push(f + 'encryption: ' + yamlPlainScalar(info.encryption));
+	}
+	if (info.tls) lines.push(f + 'tls: true');
+	if (info.servername) lines.push(f + 'servername: ' + yamlPlainScalar(info.servername));
+	if (info.alpnList.length > 0) {
+		lines.push(f + 'alpn:');
+		for (const a of info.alpnList) lines.push(child + '- ' + yamlPlainScalar(a));
+	}
+	if (info.fp) lines.push(f + 'client-fingerprint: ' + yamlPlainScalar(info.fp));
+	if (info.flow) lines.push(f + 'flow: ' + yamlPlainScalar(info.flow));
+	if (info.packetEncoding) lines.push(f + 'packet-encoding: ' + yamlPlainScalar(info.packetEncoding));
+	if (info.scv) lines.push(f + 'skip-cert-verify: true');
+	// reality
+	if (info.isReality || info.pbk || info.sid) {
+		lines.push(f + 'reality-opts:');
+		if (info.pbk) lines.push(child + 'public-key: ' + yamlPlainScalar(info.pbk));
+		if (info.sid) lines.push(child + 'short-id: ' + yamlPlainScalar(info.sid));
+		// mihomo 新内核需要 X25519MLKEM 开关
+		lines.push(child + 'support-x25519mlkem768: true');
+	}
+	// xhttp 核心
+	lines.push(f + 'network: xhttp');
+	lines.push(f + 'xhttp-opts:');
+	lines.push(child + 'path: ' + yamlPlainScalar(info.path));
+	lines.push(child + 'host: ' + yamlPlainScalar(info.host));
+	lines.push(child + 'mode: ' + yamlPlainScalar(info.mode));
+	return lines.map(l => ' '.repeat(dashIndent) + l);
+}
+
+// 匹配原始 info 和后端输出节点(返回匹配到的 info,用于标记已处理)
+function matchXHTTPInfo(info, server, port, uuid, name) {
+	if (uuid && info.uuid && uuid === info.uuid && server === info.server && port === info.port) return info;
+	if (name && info.name && name === info.name && server === info.server) return info;
+	return null;
+}
+
 // 块状写法:修复单个 "- name: xxx" 节点
-function fixXHTTPBlock(block, infos) {
+function fixXHTTPBlock(block, infos, matchedSet) {
 	const first = block[0];
 	const head = first.replace(/^\s*-\s+/, '');
 	const headMatch = head.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
@@ -382,23 +455,19 @@ function fixXHTTPBlock(block, infos) {
 	const port = yamlScalarString(getField('port')) || '443';
 	const uuid = yamlScalarString(getField('uuid'));
 	const name = yamlScalarString(headMatch[2]);
-	const info = infos.find(x =>
-		(uuid && x.uuid && uuid === x.uuid && server === x.server && port === x.port) ||
-		(name && x.name && name === x.name && server === x.server)
-	);
+	const info = infos.find(x => matchXHTTPInfo(x, server, port, uuid, name));
 	if (!info) return block;
+	matchedSet.add(info);
 
 	const result = block.slice();
 	const netIdx = result.findIndex(l => /^\s*network\s*:/.test(l));
-	// 1. network 统一改成 xhttp
 	if (netIdx >= 0) {
 		result[netIdx] = result[netIdx].replace(/^(\s*)network\s*:.*$/, '$1network: xhttp');
 	} else {
 		const typeIdx = result.findIndex(l => /^\s*type\s*:\s*vless\s*$/.test(l));
 		result.splice(typeIdx >= 0 ? typeIdx + 1 : 1, 0, ' '.repeat(fieldIndent) + 'network: xhttp');
 	}
-	// 2. h2-opts / http-opts 重建为 xhttp-opts(host 强制字符串)
-	const optsIdx = result.findIndex(l => /^\s*(h2-opts|http-opts)\s*:/.test(l));
+	const optsIdx = result.findIndex(l => /^\s*(h2-opts|http-opts|xhttp-opts)\s*:/.test(l));
 	const opts = [
 		'path: ' + yamlPlainScalar(info.path),
 		'host: ' + yamlPlainScalar(info.host || info.server),
@@ -409,15 +478,14 @@ function fixXHTTPBlock(block, infos) {
 		if (result[optsIdx].includes('{')) {
 			result[optsIdx] = ' '.repeat(optsIndent) + 'xhttp-opts: {' + opts.join(', ') + '}';
 		} else {
-			let end = optsIdx + 1;
 			let childIndent = optsIndent + 2;
 			for (let k = optsIdx + 1; k < result.length; k++) {
 				if (result[k].trim() === '') break;
 				const indent = result[k].match(/^\s*/)[0].length;
 				if (indent <= optsIndent) break;
-				childIndent = indent;
-				break;
+				childIndent = indent; break;
 			}
+			let end = optsIdx + 1;
 			while (end < result.length) {
 				if (result[end].trim() === '') break;
 				const indent = result[end].match(/^\s*/)[0].length;
@@ -444,7 +512,7 @@ function fixXHTTPBlock(block, infos) {
 }
 
 // 流式写法:修复单个 "- {name: xxx, ...}" 节点
-function fixXHTTPInline(line, infos) {
+function fixXHTTPInline(line, infos, matchedSet) {
 	const indent = line.match(/^\s*/)[0];
 	const body = line.trim();
 	if (!/type:\s*vless/.test(body)) return line;
@@ -456,11 +524,9 @@ function fixXHTTPInline(line, infos) {
 	const server = pick('server');
 	const port = pick('port') || '443';
 	const uuid = pick('uuid');
-	const info = infos.find(x =>
-		(uuid && x.uuid && uuid === x.uuid && server === x.server && port === x.port) ||
-		(name && x.name && name === x.name && server === x.server)
-	);
+	const info = infos.find(x => matchXHTTPInfo(x, server, port, uuid, name));
 	if (!info) return line;
+	matchedSet.add(info);
 
 	let fixed = body;
 	if (/network\s*:/.test(fixed)) {
@@ -473,53 +539,53 @@ function fixXHTTPInline(line, infos) {
 		fixed = fixed.replace(/xhttp-opts\s*:\s*\{[^}]*\}/, 'xhttp-opts: {' + opts + '}');
 	} else if (/(h2-opts|http-opts)\s*:\s*\{[^}]*\}/.test(fixed)) {
 		fixed = fixed.replace(/(h2-opts|http-opts)\s*:\s*\{[^}]*\}/, 'xhttp-opts: {' + opts + '}');
-	} else if (/(h2-opts|http-opts)\s*:/.test(fixed)) {
-		fixed = fixed.replace(/(h2-opts|http-opts)\s*:\s*[^,}]*/, 'xhttp-opts: {' + opts + '}');
+	} else if (/(h2-opts|http-opts|xhttp-opts)\s*:\s*[^{,]*/.test(fixed)) {
+		fixed = fixed.replace(/(h2-opts|http-opts|xhttp-opts)\s*:\s*[^{,]*/, 'xhttp-opts: {' + opts + '}');
 	} else {
 		fixed = fixed.replace('network: xhttp', 'network: xhttp, xhttp-opts: {' + opts + '}');
 	}
 	return indent + fixed;
 }
 
-// 仅在 proxies 区扫描节点,块状与流式都支持
+// 仅在 proxies 区扫描节点,块状与流式都支持,丢失节点在 proxies 区末尾注入
 function fixXHTTPDowngrade(yaml, plainNodes) {
-	if (!yaml || !yaml.includes('vless')) return yaml;
+	if (!yaml) return yaml;
 	const infos = collectXHTTPNodes(plainNodes);
 	if (infos.length === 0) return yaml;
+	const matched = new Set();
 	const lines = yaml.split('\n');
 	const out = [];
 	let inProxies = false;
-	let proxiesIndent = -1;
 	let i = 0;
 	while (i < lines.length) {
 		const line = lines[i];
-		if (/^\s*proxies\s*:\s*$/.test(line)) {
+		// 顶层 proxies 键:缩进必须为 0,精确匹配 proxies:
+		if (/^proxies\s*:\s*$/.test(line)) {
 			inProxies = true;
-			proxiesIndent = line.match(/^\s*/)[0].length;
 			out.push(line);
-			i++;
-			continue;
+			i++; continue;
 		}
-		if (!inProxies) {
-			out.push(line);
-			i++;
-			continue;
-		}
-		// proxies 区结束:出现同级或更浅的顶层键
+		if (!inProxies) { out.push(line); i++; continue; }
+
+		// proxies 区结束:遇到顶层键(缩进为 0 且非空且不是当前节点内部内容)
 		if (line.trim() !== '' && !/^\s*-\s/.test(line)) {
-			const indent = line.match(/^\s*/)[0].length;
-			if (indent <= proxiesIndent) {
+			const curIndent = line.match(/^\s*/)[0].length;
+			if (curIndent === 0) {
 				inProxies = false;
-				out.push(line);
-				i++;
-				continue;
+				for (const info of infos) {
+					if (!matched.has(info)) {
+						out.push('');
+						out.push(...buildXHTTPNodeBlock(info, 2));
+					}
+				}
+				out.push(line); i++; continue;
 			}
 		}
+
 		// 流式写法
 		if (/^\s*-\s*\{.*\}\s*$/.test(line)) {
-			out.push(fixXHTTPInline(line, infos));
-			i++;
-			continue;
+			out.push(fixXHTTPInline(line, infos, matched));
+			i++; continue;
 		}
 		// 块状写法
 		const start = line.match(/^(\s*)-\s+(\S.*)$/);
@@ -530,19 +596,24 @@ function fixXHTTPDowngrade(yaml, plainNodes) {
 			for (; j < lines.length; j++) {
 				const next = lines[j];
 				if (next.trim() === '') break;
-				// 只有与当前条目同级的 "- " 才是下一个节点;更深缩进的是 alpn/host 等列表项
 				const nextDash = next.match(/^(\s*)-\s/);
 				if (nextDash && nextDash[1].length <= dashIndent) break;
 				const indent = next.match(/^\s*/)[0].length;
 				if (indent <= dashIndent) break;
 				block.push(next);
 			}
-			out.push(...fixXHTTPBlock(block, infos));
-			i = j;
-			continue;
+			out.push(...fixXHTTPBlock(block, infos, matched));
+			i = j; continue;
 		}
-		out.push(line);
-		i++;
+		out.push(line); i++;
+	}
+	if (inProxies) {
+		for (const info of infos) {
+			if (!matched.has(info)) {
+				out.push('');
+				out.push(...buildXHTTPNodeBlock(info, 2));
+			}
+		}
 	}
 	return out.join('\n');
 }
