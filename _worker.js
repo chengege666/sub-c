@@ -49,7 +49,9 @@ export default {
 			token === fake.yesterday ||
 			url.pathname === '/' + fake.today ||
 			url.pathname === '/' + fake.yesterday;
-		const isTokenMatch = token === cfg.token || isFakeTokenRequest || url.pathname === '/' + cfg.token;
+		// pathname 保持百分号编码,解码后再与 TOKEN 比较,兼容含 / + 等特殊字符的 TOKEN
+		const pathToken = safeDecodePath(url.pathname.replace(/^\/+/, ''));
+		const isTokenMatch = token === cfg.token || isFakeTokenRequest || pathToken === cfg.token;
 
 		if (!isTokenMatch) {
 			// 非订阅入口,返回 nginx 伪装页
@@ -122,12 +124,11 @@ export default {
 				const converted = await convertStructuredSubs(cfg, 结构化订阅URLs, userAgentHeader);
 				merged = dedup([merged, converted.links].filter(Boolean).join('\n'));
 			}
+			// 合并标准下载响应头,保证 Content-Disposition 携带用户配置的订阅文件名
 			return new Response(base64Encode(merged), {
-				headers: {
-					'content-type': 'text/plain; charset=utf-8',
-					'Profile-Update-Interval': `${cfg.subUpdateTime}`,
+				headers: Object.assign(buildDownloadHeaders(cfg, 'txt'), {
 					'Profile-web-page-url': request.url.split('?')[0]
-				}
+				})
 			});
 		}
 
@@ -157,9 +158,8 @@ export default {
 		}
 
 		// 后端有时会返回 200 但内容里没有任何代理节点(看似正常,实际不可用)
-		const emptyResult =
-			订阅格式 === 'clash' ? !hasClashProxies(content) :
-			(订阅格式 === 'singbox' ? !hasSingboxOutbounds(content) : false);
+		// 统一走 hasProxies 校验,Surge / Surfboard / QuanX / Loon 也不再放行空壳配置
+		const emptyResult = !hasProxies(content, 订阅格式);
 		if (emptyResult) {
 			return buildFailureResponse(cfg, 订阅格式, 所有明文节点, '转换结果不包含任何代理节点');
 		}
@@ -207,6 +207,15 @@ function sanitizeUpdateTime(raw) {
 	const n = parseInt(raw, 10);
 	if (!Number.isFinite(n) || n <= 0) return DEFAULT_SUB_UPDATE_TIME;
 	return Math.min(n, 168);
+}
+
+// 路径中的 TOKEN 可能被 encodeURIComponent 编码(%2F / %2B 等),安全解码后再比较
+function safeDecodePath(text) {
+	try {
+		return decodeURIComponent(text);
+	} catch (e) {
+		return text;
+	}
 }
 
 function buildRequestConfig(env) {
@@ -409,6 +418,7 @@ const FORMAT_PARAM_GROUPS = [
 	{ format: 'singbox', keys: ['sb', 'singbox'] },
 	{ format: 'clash', keys: ['clash'] },
 	{ format: 'surge', keys: ['surge'] },
+	{ format: 'surfboard', keys: ['surfboard'] },
 	{ format: 'quanx', keys: ['quanx'] },
 	{ format: 'loon', keys: ['loon'] }
 ];
@@ -449,8 +459,10 @@ function detectUAFormat(userAgent) {
 	}
 	// ---- SingBox ----
 	if (ual.includes('sing-box') || ual.includes('singbox')) return 'singbox';
-	// ---- Surge / Surfboard ----
-	if (ual.includes('surge') || ual.includes('surfboard')) return 'surge';
+	// ---- Surfboard(独立识别,避免套用 Surge 4 语法)----
+	if (ual.includes('surfboard')) return 'surfboard';
+	// ---- Surge ----
+	if (ual.includes('surge')) return 'surge';
 	// ---- Quantumult X ----
 	if (ual.includes('quantumult')) return 'quanx';
 	// ---- Loon ----
@@ -666,7 +678,12 @@ function buildSubConverterQuery(cfg, target, sourceUrl, options) {
 		'sort=false',
 		'new_name=true'
 	];
-	if (withConfig) params.push('config=' + encodeURIComponent(cfg.subConfig));
+	// Sing-box 不能直接套用 Clash 的 INI 规则文件:多数后端缺少 Sing-box 专用模板会直接 500,
+	// 这里跳过 config 参数,让后端生成标准的 Sing-box 基础结构
+	const subConfig = String(cfg && cfg.subConfig ? cfg.subConfig : '');
+	const skipConfig = target === 'singbox'
+		&& (!subConfig || /\.ini(?=$|[?#])/i.test(subConfig) || subConfig === DEFAULT_SUB_CONFIG);
+	if (withConfig && !skipConfig) params.push('config=' + encodeURIComponent(subConfig));
 	if (target === 'surge') params.push('ver=4');
 	if (target === 'quanx') params.push('udp=true');
 	return params.join('&');
@@ -714,6 +731,43 @@ function hasSingboxOutbounds(text) {
 	} catch (e) {
 		return false;
 	}
+}
+
+// 取 INI 风格配置(Surge / Surfboard / Loon / Quantumult X)中某个节区的有效行
+function getIniSectionLines(text, sectionName) {
+	const lines = String(text == null ? '' : text).split('\n');
+	const wanted = '[' + String(sectionName).toLowerCase() + ']';
+	let start = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].trim().toLowerCase() === wanted) {
+			start = i;
+			break;
+		}
+	}
+	if (start < 0) return [];
+	const result = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		const line = lines[i].trim();
+		if (!line) continue;
+		if (/^\[.*\]$/.test(line)) break;   // 进入下一个节区
+		if (/^[#;\/]/.test(line)) continue; // 跳过注释行
+		result.push(line);
+	}
+	return result;
+}
+
+// 统一校验转换结果是否包含代理节点,避免把空壳配置以 200 下发给客户端
+function hasProxies(content, format) {
+	const text = String(content == null ? '' : content);
+	if (format === 'clash') return hasClashProxies(text);
+	if (format === 'singbox') return hasSingboxOutbounds(text);
+	if (format === 'surge' || format === 'surfboard' || format === 'loon') {
+		return getIniSectionLines(text, 'Proxy').some(line => line.includes('='));
+	}
+	if (format === 'quanx') {
+		return getIniSectionLines(text, 'server_local').some(line => line.includes('='));
+	}
+	return true;
 }
 
 // ================= 转换失败降级 =================
@@ -2124,7 +2178,7 @@ https://sub.example.com/auto"></textarea>
 <script>
 const HAS_PASSWORD = ${hasPassword ? 'true' : 'false'};
 const TOKEN = ${jsonForScript(cfg.token)};
-const SUB_URL = location.origin + '/' + TOKEN;
+const SUB_URL = location.origin + '/' + encodeURIComponent(TOKEN);
 const STORAGE_KEY = 'sub_auth_' + TOKEN;
 let AUTH_TOKEN = '';
 
@@ -2137,7 +2191,8 @@ const CLIENTS = [
 	{ name: '通用 / base64', hint: 'v2rayN · v2rayNG · NekoBox · Shadowrocket', url: SUB_URL + '?b64=1' },
 	{ name: 'Clash 系', hint: 'Clash Verge · Mihomo · Stash · Karing · Hiddify', url: SUB_URL + '?clash=1' },
 	{ name: 'Sing-box', hint: 'sing-box · fluxbox · Hiddify(内核)', url: SUB_URL + '?sb=1' },
-	{ name: 'Surge', hint: 'Surge · Surfboard', url: SUB_URL + '?surge=1' },
+	{ name: 'Surge', hint: 'Surge', url: SUB_URL + '?surge=1' },
+	{ name: 'Surfboard', hint: 'Surfboard (Android)', url: SUB_URL + '?surfboard=1' },
 	{ name: 'Quantumult X', hint: '圈', url: SUB_URL + '?quanx=1' },
 	{ name: 'Loon', hint: 'Loon', url: SUB_URL + '?loon=1' }
 ];
