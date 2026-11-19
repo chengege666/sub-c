@@ -1396,12 +1396,25 @@ function fixAnyTLSFingerprint(yaml) {
 	if (!yaml || !yaml.includes('anytls')) return yaml;
 	const lines = yaml.split('\n');
 	let isAnyTLS = false;
+	let nodeIndent = -1; // 当前节点 "- " 所在的缩进层级
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		// 块状节点以 "- " 开头,遇到新节点时重置标记
-		if (/^\s*-\s/.test(line) && !/^\s*-\s*\{/.test(line)) isAnyTLS = false;
-		// 块状写法:type 单独一行
-		if (/^\s*type:\s*["']?anytls["']?\s*$/.test(line)) isAnyTLS = true;
+		// 只有同级或更浅缩进的 "- " 才是新节点;
+		// alpn / 证书指纹等子项的 "- h2" 缩进更深,不能用来重置标记
+		const dash = line.match(/^(\s*)-\s/);
+		if (dash && !/^\s*-\s*\{/.test(line)) {
+			if (nodeIndent < 0 || dash[1].length <= nodeIndent) {
+				isAnyTLS = false;
+				nodeIndent = dash[1].length;
+			}
+		}
+		// 顶层键(非列表项)→ 已离开 proxies 区,重置状态
+		if (!dash && /^\S/.test(line)) {
+			isAnyTLS = false;
+			nodeIndent = -1;
+		}
+		// 块状写法:type 单独一行(允许行尾注释)
+		if (/^\s*type:\s*["']?anytls["']?\s*(?:#.*)?$/.test(line)) isAnyTLS = true;
 		if (isAnyTLS && /^\s+fingerprint\s*:\s*\S/.test(line)) {
 			lines[i] = line.replace(/^(\s+)fingerprint\s*:/, '$1client-fingerprint:');
 			continue;
