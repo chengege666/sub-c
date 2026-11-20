@@ -8,7 +8,7 @@
 // (例如 http 协议的转换后端与 https 协议的转换后端串台、TOKEN 串台)。
 // 这里改为不可变默认值 + 请求级 cfg 对象,业务函数不再读写模块级可变状态。
 const DEFAULT_MAIN_DATA = '';                 // 默认节点(绑定 KV 后失效)
-const DEFAULT_SUB_CONFIG = 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Full_MultiMode.ini';
+const DEFAULT_SUB_CONFIG = 'https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini';
 const DEFAULT_SUB_PROTOCOL = 'https';
 const DEFAULT_FILE_NAME = 'sub';              // 订阅文件名,可留空使用默认
 const DEFAULT_SUB_UPDATE_TIME = 6;            // 订阅更新间隔(小时),可留空使用默认
